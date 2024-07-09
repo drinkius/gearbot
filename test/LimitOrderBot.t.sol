@@ -14,8 +14,6 @@ import {LimitOrderBot} from "../contracts/LimitOrderBot.sol";
 
 import {BotTestHelper} from "./BotTestHelper.sol";
 
-import "forge-std/console.sol";
-
 contract LimitOrderBotTest is BotTestHelper {
     // tested bot
     LimitOrderBot public bot;
@@ -32,26 +30,20 @@ contract LimitOrderBotTest is BotTestHelper {
     function setUp() public {
         user = makeAddr("USER");
         executor = makeAddr("EXECUTOR");
-        console.log("000000");
 
         setUpGearbox("Trade USDC Tier 1");
-        console.log("11111");
 
         creditAccount = openCreditAccount(user, 50_000e6, 100_000e6);
-        console.log("2");
 
         bot = new LimitOrderBot();
         vm.prank(user);
         creditFacade.setBotPermissions(
             address(creditAccount), address(bot), uint192(ALL_CREDIT_FACADE_CALLS_PERMISSION)
         );
-        console.log("3");
 
         // let's make weth non-quoted for this test because bot doesn't work with quotas
         uint256 quotedTokensMask = creditManager.quotedTokensMask();
         uint256 wethMask = creditManager.getTokenMaskOrRevert(address(weth));
-
-        console.log("4");
 
         vm.prank(creditManager.creditConfigurator());
         creditManager.setQuotedMask(quotedTokensMask & ~wethMask);

@@ -21,8 +21,6 @@ import {ICreditFacadeV3Multicall} from "@gearbox-protocol/core-v3/contracts/inte
 import {ICreditManagerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditManagerV3.sol";
 import {IPriceOracleV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IPriceOracleV3.sol";
 
-import "forge-std/console.sol";
-
 contract BotTestHelper is Test {
     // core contracts
     IAddressProviderV3 addressProvider;
@@ -61,7 +59,6 @@ contract BotTestHelper is Test {
     function _setUpGearboxCreditContracts(string memory creditManagerName) private {
         creditManager = getCreditManagerByName(creditManagerName);
         creditFacade = ICreditFacadeV3(creditManager.creditFacade());
-        console.logAddress(creditManager.underlying());
         underlying = IERC20(creditManager.underlying());
     }
 
@@ -73,10 +70,9 @@ contract BotTestHelper is Test {
         internal
         returns (ICreditAccountV3 creditAccount)
     {
-        console.log("-1");
         // Issue with USDC: https://github.com/foundry-rs/forge-std/issues/318
+        // resolved by updating forge-std
         deal({token: address(underlying), to: user, give: collateralAmount});
-        console.log("-2");
 
         vm.startPrank(user);
         underlying.approve(address(creditManager), collateralAmount);
@@ -152,14 +148,10 @@ contract BotTestHelper is Test {
 
     function getCreditManagerByName(string memory name) internal view returns (ICreditManagerV3) {
         address[] memory creditManagers = contractsRegister.getCreditManagers();
-        console.log(name);
 
         for (uint256 i; i < creditManagers.length; ++i) {
             ICreditManagerV3 _creditManager = ICreditManagerV3(creditManagers[i]);
-            console.logAddress(creditManagers[i]);
-            if (_creditManager.version() >= 3_00) {
-                console.log(_creditManager.name());
-            }
+            // Updated version check to >= for potential future updates
             if (_creditManager.version() >= 3_00 && _equal(_creditManager.name(), name)) {
                 return _creditManager;
             }
