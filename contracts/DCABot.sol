@@ -11,31 +11,39 @@ import {ICreditFacadeV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IC
 import {ICreditFacadeV3Multicall} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3Multicall.sol";
 import {IPriceOracleV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IPriceOracleV3.sol";
 
-/// @title Limit order bot.
-/// @notice Allows Gearbox users to submit limit sell orders. Arbitrary accounts can execute these orders.
-/// @dev Not designed to handle quoted tokens.
+import {IUniswapV3Adapter, ISwapRouter} from "./interfaces/IUniswapV3Adapter.sol";
 
+/// @title Dollar Cost Average (DCA) bot.
+/// @notice Allows Gearbox users to submit DCA orders. Arbitrary accounts can execute these orders.
 contract DCABot {
     // ----- //
     // TYPES //
     // ----- //
 
-    /// @notice Limit order data.
+    /// @notice DCA order data.
     struct Order {
         address borrower;
         address manager;
         address account;
-        address tokenIn;
         address tokenOut;
-        uint256 amountIn;
-        uint256 limitPrice;
-        uint256 triggerPrice;
-        uint256 deadline;
+        uint256 budget;
+        uint256 interval;
+        uint256 amountPerInterval;
+        uint256 totalSpend;
+        uint256 lastPrice;
+        uint256 lastPurchaseTime;
+        uint256 deadline; // needs to be far away, may be calculated for max number of purchases needed
     }
 
     // --------------- //
     // STATE VARIABLES //
     // --------------- //
+
+    /// @notice Quote Token, expected to be a stablecoin
+    address public immutable quoteToken;
+
+    /// @notice Uniswap router adapter
+    address public immutable uniswapAdapter;
 
     /// @notice Pending orders.
     mapping(uint256 => Order) public orders;
@@ -47,7 +55,7 @@ contract DCABot {
     // EVENTS //
     // ------ //
 
-    /// @notice Emitted when user submits a new order.
+    /// @notice Emitted when user submits a new DCA order.
     /// @param user User that submitted the order.
     /// @param orderId ID of the created order.
     event CreateOrder(address indexed user, uint256 indexed orderId);
@@ -57,10 +65,28 @@ contract DCABot {
     /// @param orderId ID of the canceled order.
     event CancelOrder(address indexed user, uint256 indexed orderId);
 
-    /// @notice Emitted when order is successfully executed.
+    /// @notice Emitted when DCA order is successfully executed.
     /// @param executor Account that executed the order.
     /// @param orderId ID of the executed order.
-    event ExecuteOrder(address indexed executor, uint256 indexed orderId);
+    /// @param amountPurchased Amount of tokenOut purchased.
+    event PurchaseCompleted(address indexed executor, uint256 indexed orderId, uint256 amountPurchased);
+
+    /// @notice Emitted when DCA order is fully completed.
+    /// @param executor Account that executed the order.
+    /// @param orderId ID of the executed order.
+    /// @param amountPurchased Amount of tokenOut purchased this execution.
+    /// @param totalSpend Amount of tokenOut purchased this execution.
+    event OrderCompleted(
+        address indexed executor, 
+        uint256 indexed orderId,
+        uint256 amountPurchased, 
+        uint256 totalSpend
+    );
+
+    /// @notice Emitted when DCA order is reset after a large price swing.
+    /// @param user User that reset the order.
+    /// @param orderId ID of the reset order.
+    event ResetOrder(address indexed user, uint256 indexed orderId);
 
     // ------ //
     // ERRORS //
@@ -78,28 +104,50 @@ contract DCABot {
     /// @notice When trying to execute order after deadline.
     error Expired();
 
-    /// @notice When trying to execute order while it's not triggered.
-    error NotTriggered();
-
-    /// @notice When user has no input token on their balance.
-    error NothingToSell();
-
     /// @notice When the credit account's owner changed between order submission and execution.
     error CreditAccountBorrowerChanged();
+
+    /// @notice When trying to execute order before the interval has passed.
+    error IntervalNotPassed();
+
+    /// @notice When the price swing is too large to execute the order.
+    error PriceSwingTooLarge();
+
+    // ----------- //
+    // CONSTRUCTOR //
+    // ----------- //
+
+    constructor(address quoteToken_, address uniswapAdapter_) {
+        require(quoteToken_ != address(0));
+        require(uniswapAdapter_ != address(0));
+
+        quoteToken = quoteToken_;
+        uniswapAdapter = uniswapAdapter_;
+    }
 
     // ------------------ //
     // EXTERNAL FUNCTIONS //
     // ------------------ //
 
-    /// @notice Submit new order.
+    /// @notice Submit new DCA order.
     /// @param order Order to submit.
     /// @return orderId ID of created order.
     function submitOrder(Order calldata order) external returns (uint256 orderId) {
+        // U:[DCA-02]
         if (
             order.borrower != msg.sender
                 || ICreditManagerV3(order.manager).getBorrowerOrRevert(order.account) != order.borrower
         ) {
             revert CallerNotBorrower();
+        }
+        // U:[DCA-08]
+        if (
+            quoteToken == order.tokenOut || 
+            order.amountPerInterval == 0 || 
+            order.interval == 0 ||
+            order.totalSpend != 0
+        ) {
+            revert InvalidOrder();
         }
         orderId = _useOrderId();
         orders[orderId] = order;
@@ -110,6 +158,7 @@ contract DCABot {
     /// @param orderId ID of order to cancel.
     function cancelOrder(uint256 orderId) external {
         Order storage order = orders[orderId];
+        // U:[DCA-04]
         if (order.borrower != msg.sender) {
             revert CallerNotBorrower();
         }
@@ -117,31 +166,56 @@ contract DCABot {
         emit CancelOrder(msg.sender, orderId);
     }
 
-    /// @notice Execute given order. Output token will be transferred from caller to this contract.
+    /// @notice Execute given DCA order.
     /// @param orderId ID of order to execute.
     function executeOrder(uint256 orderId) external {
         Order storage order = orders[orderId];
 
-        (uint256 amountIn, uint256 minAmountOut) = _validateOrder(order);
+        (uint256 minAmountOut, uint256 currentPrice) = _validateOrder(order);
 
-        IERC20(order.tokenOut).transferFrom(msg.sender, address(this), minAmountOut);
-        IERC20(order.tokenOut).approve(order.manager, minAmountOut + 1);
+        IERC20(quoteToken).approve(0xE592427A0AEce92De3Edee1F18E0157C05861564, order.amountPerInterval * 100);
 
         address facade = ICreditManagerV3(order.manager).creditFacade();
 
-        MultiCall[] memory calls = new MultiCall[](2);
+        ISwapRouter.ExactInputSingleParams memory exactInputSingleParams = ISwapRouter.ExactInputSingleParams({
+            tokenIn: quoteToken,
+            tokenOut: order.tokenOut,
+            fee: 500,
+            recipient: order.account,
+            deadline: block.timestamp + 3600,
+            amountIn: order.amountPerInterval,
+            amountOutMinimum: 0,
+            sqrtPriceLimitX96: 0
+        });
+
+        MultiCall[] memory calls = new MultiCall[](1);
         calls[0] = MultiCall({
-            target: facade,
-            callData: abi.encodeCall(ICreditFacadeV3Multicall.addCollateral, (order.tokenOut, minAmountOut))
+            target: uniswapAdapter,
+            callData: abi.encodeCall(IUniswapV3Adapter.exactInputSingle, exactInputSingleParams)
         });
-        calls[1] = MultiCall({
-            target: facade,
-            callData: abi.encodeCall(ICreditFacadeV3Multicall.withdrawCollateral, (order.tokenIn, amountIn, msg.sender))
-        });
+
         ICreditFacadeV3(facade).botMulticall(order.account, calls);
 
-        delete orders[orderId];
-        emit ExecuteOrder(msg.sender, orderId);
+        order.lastPurchaseTime = block.timestamp;
+        order.totalSpend += order.amountPerInterval;
+        order.lastPrice = currentPrice;
+
+        emit PurchaseCompleted(msg.sender, orderId, minAmountOut);
+        if (order.totalSpend >= order.budget) {
+            delete orders[orderId];
+            emit OrderCompleted(msg.sender, orderId, minAmountOut, order.totalSpend);
+        }
+    }
+
+    /// @notice Reset the order after a large price swing.
+    /// @param orderId ID of order to reset.
+    function resetOrder(uint256 orderId) external {
+        Order storage order = orders[orderId];
+        if (order.borrower != msg.sender) {
+            revert CallerNotBorrower();
+        }
+        order.lastPrice = getCurrentPrice(ICreditManagerV3(order.manager).priceOracle(), order.tokenOut);
+        emit ResetOrder(msg.sender, orderId);
     }
 
     // ------------------ //
@@ -154,42 +228,64 @@ contract DCABot {
         _nextOrderId = orderId + 1;
     }
 
+    /// @dev Get current price from the price oracle.
+    function getCurrentPrice(address oracle, address tokenOut) public view returns (uint256) {
+        IPriceOracleV3 oracleContract = IPriceOracleV3(oracle);
+        uint256 ONE = 10 ** IERC20Metadata(quoteToken).decimals();
+        return oracleContract.convert(ONE, quoteToken, tokenOut);
+    }
+
+    /// @dev Checks if the price swing is within acceptable range (10%).
+    function isPriceSwingAcceptable(uint256 lastPrice, uint256 currentPrice) internal pure returns (bool) {
+        uint256 swingPercentage = abs(int256(currentPrice) - int256(lastPrice)) * 100 / lastPrice;
+        return swingPercentage <= 10;
+    }
+
+    /// @dev Calculate absolute value.
+    function abs(int256 x) internal pure returns (uint256) {
+        return x >= 0 ? uint256(x) : uint256(-x);
+    }
+
     /// @dev Checks if order can be executed:
     ///      * order must be correctly constructed and not expired;
     ///      * trigger condition must hold if trigger price is set;
     ///      * borrower must have an account in manager with non-empty input token balance.
-    function _validateOrder(Order memory order) internal view returns (uint256 amountIn, uint256 minAmountOut) {
+    function _validateOrder(Order memory order) internal view returns (
+        uint256 minAmountOut, 
+        uint256 currentPrice
+    ) {
+        // U:[DCA-06]
         if (order.account == address(0)) {
             revert OrderIsCancelled();
         }
 
-        if (ICreditManagerV3(order.manager).getBorrowerOrRevert(order.account) != order.borrower) {
+        ICreditManagerV3 manager = ICreditManagerV3(order.manager);
+
+        // U:[DCA-07]
+        if (manager.getBorrowerOrRevert(order.account) != order.borrower) {
             revert CreditAccountBorrowerChanged();
         }
 
-        if (order.tokenIn == order.tokenOut || order.amountIn == 0) {
-            revert InvalidOrder();
-        }
-
+        // U:[DCA-09] - applies only when the deadline is set
         if (order.deadline > 0 && block.timestamp > order.deadline) {
             revert Expired();
         }
 
-        ICreditManagerV3 manager = ICreditManagerV3(order.manager);
-        uint256 ONE = 10 ** IERC20Metadata(order.tokenIn).decimals();
-        if (order.triggerPrice > 0) {
-            uint256 price = IPriceOracleV3(manager.priceOracle()).convert(ONE, order.tokenIn, order.tokenOut);
-            if (price > order.triggerPrice) {
-                revert NotTriggered();
-            }
+        if (order.lastPurchaseTime > 0 && block.timestamp < order.lastPurchaseTime + order.interval) {
+            revert IntervalNotPassed();
         }
 
-        uint256 balanceIn = IERC20(order.tokenIn).balanceOf(order.account);
-        if (balanceIn <= 1) {
-            revert NothingToSell();
+        currentPrice = getCurrentPrice(manager.priceOracle(), order.tokenOut);
+
+        // todo - add price on order creation
+        if (order.lastPrice > 0 && !isPriceSwingAcceptable(order.lastPrice, currentPrice)) {
+            revert PriceSwingTooLarge();
         }
 
-        amountIn = balanceIn > order.amountIn ? order.amountIn : balanceIn - 1;
-        minAmountOut = amountIn * order.limitPrice / ONE;
+        if (order.budget > 0 && order.totalSpend + order.amountPerInterval > order.budget) {
+            order.amountPerInterval = order.budget - order.totalSpend;
+        }
+
+        minAmountOut = order.amountPerInterval * 10**IERC20Metadata(order.tokenOut).decimals() / currentPrice;
     }
 }
