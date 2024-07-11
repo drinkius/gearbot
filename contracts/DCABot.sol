@@ -45,6 +45,9 @@ contract DCABot {
     /// @notice Uniswap router adapter
     address public immutable uniswapAdapter;
 
+    /// @notice Uniswap router
+    address public immutable router;
+
     /// @notice Pending orders.
     mapping(uint256 => Order) public orders;
 
@@ -121,12 +124,14 @@ contract DCABot {
     // CONSTRUCTOR //
     // ----------- //
 
-    constructor(address quoteToken_, address uniswapAdapter_) {
+    constructor(address quoteToken_, address uniswapAdapter_, address router_) {
         require(quoteToken_ != address(0));
         require(uniswapAdapter_ != address(0));
+        require(router_ != address(0));
 
         quoteToken = quoteToken_;
         uniswapAdapter = uniswapAdapter_;
+        router = router_;
     }
 
     // ------------------ //
@@ -177,7 +182,7 @@ contract DCABot {
 
         (uint256 minAmountOut, uint256 currentPrice) = _validateOrder(order);
 
-        IERC20(quoteToken).approve(0xE592427A0AEce92De3Edee1F18E0157C05861564, order.amountPerInterval * 100);
+        IERC20(quoteToken).approve(router, order.amountPerInterval * 100);
 
         address facade = ICreditManagerV3(order.manager).creditFacade();
 

@@ -12,6 +12,8 @@ import {
     EXTERNAL_CALLS_PERMISSION
 } from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3Multicall.sol";
 
+import {PriceFeedMock} from "@gearbox-protocol/core-v3/contracts/test/mocks/oracles/PriceFeedMock.sol";
+
 import {DCABot} from "../contracts/DCABot.sol";
 
 import {BotTestHelper} from "./BotTestHelper.sol";
@@ -27,6 +29,7 @@ contract DCABotTest is BotTestHelper {
     
     // dependencies
     address uniswapAdapter = 0xea8199179D6A589A0C2Df225095C1DB39A12D257; // UniswapV3Adapter
+    address router = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // SwapRouter
 
     // actors
     address user;
@@ -42,7 +45,8 @@ contract DCABotTest is BotTestHelper {
 
         bot = new DCABot(
             address(usdc),
-            uniswapAdapter
+            uniswapAdapter,
+            router // alternatively can be called by uniswapAdapter.targetContract
         );
         vm.prank(user);
         creditFacade.setBotPermissions(
@@ -209,17 +213,37 @@ contract DCABotTest is BotTestHelper {
         bot.executeOrder(orderId);
     }
 
-    // function test_DCA_10_executeOrder_reverts_if_price_swing_too_large() public {
-    //     DCABot.Order memory order = _dummyOrder();
-    //     order.deadline = block.timestamp + 1 days;
+    function test_DCA_10_executeOrder_reverts_if_price_swing_too_large() public {
+        DCABot.Order memory order = _createOrder();
 
-    //     vm.prank(user);
-    //     uint256 orderId = bot.submitOrder(order);
+        // Staleness period:
+        // usdc - 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 - 87300
+        // weth - 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 - 4500
+        // thus to execute 10 trades we need interval to be less than 4500/10
+        order.interval = 1800;
 
-    //     vm.expectRevert(DCABot.NotTriggered.selector);
-    //     vm.prank(executor);
-    //     bot.executeOrder(orderId);
-    // }
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
+
+        vm.prank(executor);
+
+        // making one trade to check the order correctness and record price
+        bot.executeOrder(orderId);
+        vm.warp(block.timestamp + order.interval);
+
+        // 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 - weth price feed
+        // 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 - usdc price feed
+        // since price is determined by the Chainlink feeds - we can't expect 
+        // update prices we need, so we use mock price feed for usdc
+        address priceFeed = address(new PriceFeedMock(int256(70000000), 8));
+        // CONFIGURATOR from here: import "@gearbox-protocol/core-v3/contracts/test/lib/constants.sol"; didn't work
+        vm.prank(0xa133C9A92Fb8dDB962Af1cbae58b2723A0bdf23b);
+        priceOracle.setPriceFeed(address(usdc), priceFeed, 48 hours, false);
+
+        // After all executions the order should be cancelled
+        vm.expectRevert(DCABot.PriceSwingTooLarge.selector);
+        bot.executeOrder(orderId);
+    }
 
     // function test_DCA_11_executeOrder_reverts_if_account_has_no_quote_token() public {
     //     DCABot.Order memory order;
@@ -240,25 +264,12 @@ contract DCABotTest is BotTestHelper {
     // }
 
     function test_DCA_12_executeOrder_works_as_expected_when_called_properly() public {
-        DCABot.Order memory order;
-        order.borrower = user;
-        order.manager = address(creditManager);
-        order.account = address(creditAccount);
-        order.tokenOut = address(weth);
-        order.budget = 1000e6;
-        order.amountPerInterval = 100e6;
-        order.interval = 1 days;
-        order.deadline = block.timestamp;
+        DCABot.Order memory order = _createOrder();
 
         uint256 priceOfPurchaseFromOracle = priceOracle.convert(order.amountPerInterval, address(usdc), address(weth));
 
         vm.prank(user);
         uint256 orderId = bot.submitOrder(order);
-
-        uint256 usdcAmount = 100000e6;
-        deal({token: address(usdc), to: executor, give: usdcAmount});
-        vm.prank(executor);
-        usdc.approve(address(bot), usdcAmount);
 
         vm.expectEmit(true, true, true, false);
         emit DCABot.PurchaseCompleted(executor, orderId, 0);
@@ -286,13 +297,33 @@ contract DCABotTest is BotTestHelper {
             (priceOfPurchaseFromOracle * (bot.slippageDenominator() - bot.slippageCoefficient()) / bot.slippageDenominator()),
             "Incorrect WETH balance after trade"
         );
+    }
 
-        // _assertOrderIsEmpty(orderId);
+    function test_DCA_13_executeOrder_works_correctly_while_there_is_budget() public {
+        DCABot.Order memory order = _createOrder();
 
-        // assertEq(usdc.balanceOf(executor), 150_000e6 - 1, "Incorrect executor USDC balance");
-        // assertEq(usdc.balanceOf(address(creditAccount)), 1, "Incorrect account USDC balance");
-        // assertEq(weth.balanceOf(executor), 0, "Incorrect executor WETH balance");
-        // assertEq(weth.balanceOf(address(creditAccount)), wethAmount, "Incorrect account WETH balance");
+        // Staleness period:
+        // usdc - 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 - 87300
+        // weth - 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 - 4500
+        // thus to execute 10 trades without chainging price oracles we need interval to be less than 4500/10
+        // TODO - get updated price feed from the fork with roll fork 
+        order.interval = 400;
+
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
+
+        vm.prank(executor);
+
+        uint8 executions = 10; // Budget: 1000, each buy - 100
+        while (executions > 0) {
+            bot.executeOrder(orderId);
+            vm.warp(block.timestamp + order.interval);
+            executions -= 1;
+        }
+
+        // After all executions the order should be cancelled
+        vm.expectRevert(DCABot.OrderIsCancelled.selector);
+        bot.executeOrder(orderId);
     }
 
     function _assertOrderIsEqual(uint256 orderId, DCABot.Order memory order) internal view {
@@ -347,6 +378,18 @@ contract DCABotTest is BotTestHelper {
         assertEq(lastPrice, 0, "Incorrect lastPrice");
         assertEq(lastPurchaseTime, 0, "Incorrect lastPurchaseTime");
         assertEq(deadline, 0, "Incorrect deadline");
+    }
+
+    function _createOrder() internal view returns (DCABot.Order memory order) {
+        order.borrower = user;
+        order.manager = address(creditManager);
+        order.account = address(creditAccount);
+        order.tokenOut = address(weth);
+        order.budget = 1000e6;
+        order.amountPerInterval = 100e6;
+        order.interval = 1 days;
+        order.deadline = block.timestamp + 15 days;
+        return order;
     }
 
     function _dummyOrder() internal view returns (DCABot.Order memory order) {

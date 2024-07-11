@@ -16,3 +16,6 @@
 [submodule "lib/Gearbox-protocol/core-v2"]
 	path = lib/Gearbox-protocol/core-v2
 	url = https://github.com/Gearbox-protocol/core-v2
+[submodule "lib/Gearbox-protocol/sdk-gov"]
+	path = lib/Gearbox-protocol/sdk-gov
+	url = https://github.com/Gearbox-protocol/sdk-gov
