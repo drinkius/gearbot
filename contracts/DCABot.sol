@@ -160,6 +160,13 @@ contract DCABot {
         }
         orderId = _useOrderId();
         orders[orderId] = order;
+
+        Order storage storedOrder = orders[orderId];
+        storedOrder.lastPrice = getCurrentPrice(
+            ICreditManagerV3(storedOrder.manager).priceOracle(), 
+            storedOrder.tokenOut
+        );
+
         emit CreateOrder(msg.sender, orderId);
     }
 
@@ -218,6 +225,7 @@ contract DCABot {
 
     /// @notice Reset the order after a large price swing.
     /// @param orderId ID of order to reset.
+    // U:[DCA-14]
     function resetOrder(uint256 orderId) external {
         Order storage order = orders[orderId];
         if (order.borrower != msg.sender) {
@@ -286,8 +294,8 @@ contract DCABot {
 
         currentPrice = getCurrentPrice(manager.priceOracle(), order.tokenOut);
 
-        // todo - add price on order creation
-        if (order.lastPrice > 0 && !isPriceSwingAcceptable(order.lastPrice, currentPrice)) {
+        // U:[DCA-10]
+        if (!isPriceSwingAcceptable(order.lastPrice, currentPrice)) {
             revert PriceSwingTooLarge();
         }
 

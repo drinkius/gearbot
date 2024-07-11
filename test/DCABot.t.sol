@@ -213,13 +213,9 @@ contract DCABotTest is BotTestHelper {
         bot.executeOrder(orderId);
     }
 
+    // U:[DCA-10]
     function test_DCA_10_executeOrder_reverts_if_price_swing_too_large() public {
         DCABot.Order memory order = _createOrder();
-
-        // Staleness period:
-        // usdc - 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 - 87300
-        // weth - 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 - 4500
-        // thus to execute 10 trades we need interval to be less than 4500/10
         order.interval = 1800;
 
         vm.prank(user);
@@ -231,37 +227,25 @@ contract DCABotTest is BotTestHelper {
         bot.executeOrder(orderId);
         vm.warp(block.timestamp + order.interval);
 
-        // 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 - weth price feed
-        // 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 - usdc price feed
-        // since price is determined by the Chainlink feeds - we can't expect 
-        // update prices we need, so we use mock price feed for usdc
-        address priceFeed = address(new PriceFeedMock(int256(70000000), 8));
-        // CONFIGURATOR from here: import "@gearbox-protocol/core-v3/contracts/test/lib/constants.sol"; didn't work
-        vm.prank(0xa133C9A92Fb8dDB962Af1cbae58b2723A0bdf23b);
-        priceOracle.setPriceFeed(address(usdc), priceFeed, 48 hours, false);
+        setMockPriceFeed();
 
         // After all executions the order should be cancelled
         vm.expectRevert(DCABot.PriceSwingTooLarge.selector);
         bot.executeOrder(orderId);
     }
 
-    // function test_DCA_11_executeOrder_reverts_if_account_has_no_quote_token() public {
-    //     DCABot.Order memory order;
-    //     order.borrower = user;
-    //     order.manager = address(creditManager);
-    //     order.account = address(creditAccount);
-    //     order.tokenIn = address(weth);
-    //     order.tokenOut = address(usdc);
-    //     order.amountIn = 123;
-    //     order.deadline = block.timestamp;
+    function test_DCA_11_executeOrder_reverts_if_account_has_no_quote_token() public {
+        DCABot.Order memory order = _createOrder();
 
-    //     vm.prank(user);
-    //     uint256 orderId = bot.submitOrder(order);
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
 
-    //     vm.expectRevert(DCABot.NothingToSell.selector);
-    //     vm.prank(executor);
-    //     bot.executeOrder(orderId);
-    // }
+        deal({token: address(underlying), to: order.account, give: 0});
+    
+        vm.expectRevert();
+        vm.prank(executor);
+        bot.executeOrder(orderId);
+    }
 
     function test_DCA_12_executeOrder_works_as_expected_when_called_properly() public {
         DCABot.Order memory order = _createOrder();
@@ -326,6 +310,39 @@ contract DCABotTest is BotTestHelper {
         bot.executeOrder(orderId);
     }
 
+    // U:[DCA-14]
+    function test_DCA_14_order_can_be_reset_after_price_swing() public {
+        DCABot.Order memory order = _createOrder();
+        order.interval = 400;
+
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
+
+        vm.startPrank(executor);
+
+        uint8 executions = 9; // Budget: 1000, each buy - 100
+        while (executions > 0) {
+            bot.executeOrder(orderId);
+            vm.warp(block.timestamp + order.interval);
+            executions -= 1;
+        }
+        vm.stopPrank();
+
+        setMockPriceFeed();
+
+        // After all executions the order should be cancelled
+        vm.prank(executor);
+        vm.expectRevert(DCABot.PriceSwingTooLarge.selector);
+        bot.executeOrder(orderId);
+
+        vm.prank(user);
+        bot.resetOrder(orderId);
+
+        vm.prank(executor);
+        bot.executeOrder(orderId);
+    }
+
+
     function _assertOrderIsEqual(uint256 orderId, DCABot.Order memory order) internal view {
         (
             address borrower,
@@ -336,7 +353,7 @@ contract DCABotTest is BotTestHelper {
             uint256 interval,
             uint256 amountPerInterval,
             uint256 totalSpend,
-            uint256 lastPrice,
+            ,
             uint256 lastPurchaseTime,
             uint256 deadline
         ) = bot.orders(orderId);
@@ -348,7 +365,6 @@ contract DCABotTest is BotTestHelper {
         assertEq(totalSpend, order.totalSpend, "Incorrect totalSpend");
         assertEq(interval, order.interval, "Incorrect interval");
         assertEq(amountPerInterval, order.amountPerInterval, "Incorrect amountPerInterval");
-        assertEq(lastPrice, order.lastPrice, "Incorrect lastPrice");
         assertEq(lastPurchaseTime, order.lastPurchaseTime, "Incorrect lastPurchaseTime");
         assertEq(deadline, order.deadline, "Incorrect deadline");
     }
@@ -399,5 +415,16 @@ contract DCABotTest is BotTestHelper {
         order.tokenOut = address(weth);
         order.amountPerInterval = 1;
         order.interval = 1;
+    }
+
+    function setMockPriceFeed() internal {
+        // 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 - weth price feed
+        // 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 - usdc price feed
+        // since price is determined by the Chainlink feeds - we can't expect 
+        // update prices we need, so we use mock price feed for usdc
+        address priceFeed = address(new PriceFeedMock(int256(70000000), 8));
+        // CONFIGURATOR from here: import "@gearbox-protocol/core-v3/contracts/test/lib/constants.sol"; didn't work
+        vm.prank(0xa133C9A92Fb8dDB962Af1cbae58b2723A0bdf23b);
+        priceOracle.setPriceFeed(address(usdc), priceFeed, 48 hours, false);
     }
 }
