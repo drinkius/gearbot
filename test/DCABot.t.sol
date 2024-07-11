@@ -245,12 +245,12 @@ contract DCABotTest is BotTestHelper {
         order.manager = address(creditManager);
         order.account = address(creditAccount);
         order.tokenOut = address(weth);
-        order.budget = 1000;
+        order.budget = 1000e6;
         order.amountPerInterval = 100e6;
         order.interval = 1 days;
         order.deadline = block.timestamp;
 
-        // uint256 currentPrice = priceOracle.convert(1e6, address(usdc), address(weth));
+        uint256 priceOfPurchaseFromOracle = priceOracle.convert(order.amountPerInterval, address(usdc), address(weth));
 
         vm.prank(user);
         uint256 orderId = bot.submitOrder(order);
@@ -260,11 +260,32 @@ contract DCABotTest is BotTestHelper {
         vm.prank(executor);
         usdc.approve(address(bot), usdcAmount);
 
-        // vm.expectEmit(true, true, true, true);
-        // emit DCABot.PurchaseCompleted(executor, orderId, 0);
+        vm.expectEmit(true, true, true, false);
+        emit DCABot.PurchaseCompleted(executor, orderId, 0);
+
+        address creditAddress = address(creditAccount);
+
+        uint256 executorUSDCBefore = usdc.balanceOf(executor);
+        uint256 executorWETHBefore = weth.balanceOf(executor);
+        uint256 creditUSDCBefore = usdc.balanceOf(creditAddress);
+        uint256 creditWETHBefore = weth.balanceOf(creditAddress);
 
         vm.prank(executor);
         bot.executeOrder(orderId);
+
+        assertEq(usdc.balanceOf(executor), executorUSDCBefore, "Executor lost USDC");
+        assertEq(weth.balanceOf(executor), executorWETHBefore, "Executor lost WETH");
+        assertEq(
+            usdc.balanceOf(creditAddress), 
+            creditUSDCBefore - order.amountPerInterval, 
+            "Incorrect USDC balance after trade"
+        );
+        assertApproxEqAbs(
+            weth.balanceOf(creditAddress), 
+            creditWETHBefore + priceOfPurchaseFromOracle, 
+            (priceOfPurchaseFromOracle * (bot.slippageDenominator() - bot.slippageCoefficient()) / bot.slippageDenominator()),
+            "Incorrect WETH balance after trade"
+        );
 
         // _assertOrderIsEmpty(orderId);
 

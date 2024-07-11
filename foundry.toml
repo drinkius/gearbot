@@ -5,4 +5,4 @@ libs = ['lib']
 solc_version = '0.8.26'
 evm_version = 'cancun'
 optimizer_runs = 1000000
-verbosity = 3
+verbosity = 2

@@ -153,7 +153,6 @@ contract BotTestHelper is Test {
             ICreditManagerV3 _creditManager = ICreditManagerV3(creditManagers[i]);
             // Updated version check to >= for potential future updates
             if (_creditManager.version() >= 3_00 && _equal(_creditManager.name(), name)) {
-                console.logAddress(creditManagers[i]);
                 return _creditManager;
             }
         }

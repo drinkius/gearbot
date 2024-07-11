@@ -51,6 +51,10 @@ contract DCABot {
     /// @dev Orders counter.
     uint256 internal _nextOrderId;
 
+    /// @dev Slippage controls - max 1 percent.
+    uint public constant slippageCoefficient = 9900;
+    uint public constant slippageDenominator = 10000;
+
     // ------ //
     // EVENTS //
     // ------ //
@@ -184,7 +188,7 @@ contract DCABot {
             recipient: order.account,
             deadline: block.timestamp + 3600,
             amountIn: order.amountPerInterval,
-            amountOutMinimum: 0,
+            amountOutMinimum: minAmountOut,
             sqrtPriceLimitX96: 0
         });
 
@@ -228,7 +232,7 @@ contract DCABot {
         _nextOrderId = orderId + 1;
     }
 
-    /// @dev Get current price from the price oracle.
+    /// @dev Get current price from the price oracle per 1 quote token.
     function getCurrentPrice(address oracle, address tokenOut) public view returns (uint256) {
         IPriceOracleV3 oracleContract = IPriceOracleV3(oracle);
         uint256 ONE = 10 ** IERC20Metadata(quoteToken).decimals();
@@ -286,6 +290,6 @@ contract DCABot {
             order.amountPerInterval = order.budget - order.totalSpend;
         }
 
-        minAmountOut = order.amountPerInterval * 10**IERC20Metadata(order.tokenOut).decimals() / currentPrice;
+        minAmountOut = (order.amountPerInterval * currentPrice * slippageCoefficient) / (10**IERC20Metadata(quoteToken).decimals() * slippageDenominator);
     }
 }
