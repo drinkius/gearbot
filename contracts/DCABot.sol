@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.20;
 
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
@@ -15,7 +18,7 @@ import {IUniswapV3Adapter, ISwapRouter} from "./interfaces/IUniswapV3Adapter.sol
 
 /// @title Dollar Cost Average (DCA) bot.
 /// @notice Allows Gearbox users to submit DCA orders. Arbitrary accounts can execute these orders.
-contract DCABot {
+contract DCABot is EIP712 {
     // ----- //
     // TYPES //
     // ----- //
@@ -51,12 +54,23 @@ contract DCABot {
     /// @notice Pending orders.
     mapping(uint256 => Order) public orders;
 
-    /// @dev Orders counter.
+    /// @notice Signature nonces for EIP712 replay protection.
+    mapping(address => uint256) public signatureNonce;
+
+    /// @notice Orders counter.
     uint256 internal _nextOrderId;
 
-    /// @dev Slippage controls - max 1 percent.
+    /// @notice Slippage controls - max 1 percent.
     uint public constant slippageCoefficient = 9900;
     uint public constant slippageDenominator = 10000;
+
+    /// @notice EIP-712 type hashes
+    bytes32 public constant ORDER_TYPEHASH = keccak256(
+        "Order(address borrower,address manager,address account,address tokenOut,uint256 budget,uint256 interval,uint256 amountPerInterval,uint256 deadline,uint256 nonce)"
+    );
+    bytes32 public constant CANCEL_ORDER_TYPEHASH = keccak256(
+        "CancelOrder(uint256 orderId)"
+    );
 
     // ------ //
     // EVENTS //
@@ -120,11 +134,14 @@ contract DCABot {
     /// @notice When the price swing is too large to execute the order.
     error PriceSwingTooLarge();
 
+    /// @notice When the signature nonce doesn't correspond to current counter.
+    error IncorrectSignatureNonce();
+
     // ----------- //
     // CONSTRUCTOR //
     // ----------- //
 
-    constructor(address quoteToken_, address uniswapAdapter_, address router_) {
+    constructor(address quoteToken_, address uniswapAdapter_, address router_) EIP712("DCABot", "1") {
         require(quoteToken_ != address(0));
         require(uniswapAdapter_ != address(0));
         require(router_ != address(0));
@@ -149,6 +166,51 @@ contract DCABot {
         ) {
             revert CallerNotBorrower();
         }
+        return _createOrder(order);
+    }
+
+    /// @notice Submit new DCA order with EIP-712 signature.
+    /// @param order Order to submit.
+    /// @param signature EIP-712 signature of the order.
+    /// @return orderId ID of created order.
+    function submitOrderWithSignature(
+        Order calldata order, 
+        uint256 nonce, 
+        bytes memory signature
+    ) external returns (uint256 orderId) {
+        bytes32 orderHash = _hashTypedDataV4(keccak256(abi.encode(
+            ORDER_TYPEHASH,
+            order.borrower,
+            order.manager,
+            order.account,
+            order.tokenOut,
+            order.budget,
+            order.interval,
+            order.amountPerInterval,
+            order.deadline,
+            nonce
+        )));
+
+        address signer = ECDSA.recover(orderHash, signature);
+        uint256 expectedNonce = _useSignatureNonce(signer);
+        if (expectedNonce != nonce) {
+            revert IncorrectSignatureNonce();
+        }
+
+        // U:[DCA-02]
+        if (
+            order.borrower != signer
+                || ICreditManagerV3(order.manager).getBorrowerOrRevert(order.account) != order.borrower
+        ) {
+            revert CallerNotBorrower();
+        }
+        return _createOrder(order);
+    }
+
+    /// @notice Creates new DCA order assuming borrower already verified.
+    /// @param order Order to submit.
+    /// @return orderId ID of created order.
+    function _createOrder(Order calldata order) internal returns (uint256 orderId) {
         // U:[DCA-08]
         if (
             quoteToken == order.tokenOut || 
@@ -167,7 +229,7 @@ contract DCABot {
             storedOrder.tokenOut
         );
 
-        emit CreateOrder(msg.sender, orderId);
+        emit CreateOrder(order.borrower, orderId);
     }
 
     /// @notice Cancel pending order.
@@ -180,6 +242,29 @@ contract DCABot {
         }
         delete orders[orderId];
         emit CancelOrder(msg.sender, orderId);
+    }
+
+    /// @notice Cancel pending order with EIP-712 signature.
+    /// @param orderId ID of order to cancel.
+    /// @param signature EIP-712 signature for the cancel operation.
+    function cancelOrderWithSignature(uint256 orderId, bytes memory signature) external {
+        Order storage order = orders[orderId];
+        require(order.borrower != address(0), "Order does not exist");
+
+        bytes32 cancelHash = _hashTypedDataV4(keccak256(abi.encode(
+            CANCEL_ORDER_TYPEHASH,
+            orderId
+        )));
+
+        address signer = ECDSA.recover(cancelHash, signature);
+        // U:[DCA-04_1]
+        if (order.borrower != signer) {
+            revert CallerNotBorrower();
+        }
+
+        address borrower = order.borrower;
+        delete orders[orderId];
+        emit CancelOrder(borrower, orderId);
     }
 
     /// @notice Execute given DCA order.
@@ -245,6 +330,12 @@ contract DCABot {
         _nextOrderId = orderId + 1;
     }
 
+    /// @dev Increments the signature nonce for the signer and returns its previous value.
+    function _useSignatureNonce(address signer) internal returns (uint256 nonce) {
+        nonce = signatureNonce[signer];
+        signatureNonce[signer] = nonce + 1;
+    }
+
     /// @dev Get current price from the price oracle per 1 quote token.
     function getCurrentPrice(address oracle, address tokenOut) public view returns (uint256) {
         IPriceOracleV3 oracleContract = IPriceOracleV3(oracle);
@@ -304,5 +395,10 @@ contract DCABot {
         }
 
         minAmountOut = (order.amountPerInterval * currentPrice * slippageCoefficient) / (10**IERC20Metadata(quoteToken).decimals() * slippageDenominator);
+    }
+
+    /// @dev EIP712 domain separator
+    function DOMAIN_SEPARATOR() external view returns (bytes32) {
+        return _domainSeparatorV4();
     }
 }

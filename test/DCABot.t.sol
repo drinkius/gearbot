@@ -17,11 +17,15 @@ import {PriceFeedMock} from "@gearbox-protocol/core-v3/contracts/test/mocks/orac
 import {DCABot} from "../contracts/DCABot.sol";
 
 import {BotTestHelper} from "./BotTestHelper.sol";
+import {SigUtils} from "./SigUtils.sol";
 
 contract DCABotTest is BotTestHelper {
     // tested bot
     DCABot public bot;
     ICreditAccountV3 creditAccount;
+
+    // sigutils
+    SigUtils internal sigUtils;
 
     // tokens
     IERC20 weth = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
@@ -33,11 +37,15 @@ contract DCABotTest is BotTestHelper {
 
     // actors
     address user;
+    uint256 userKey;
     address executor;
+    address attacker;
+    uint256 attackerKey;
 
     function setUp() public {
-        user = makeAddr("USER");
+        (user, userKey) = makeAddrAndKey("USER");
         executor = makeAddr("EXECUTOR");
+        (attacker, attackerKey) = makeAddrAndKey("ATTACKER");
 
         setUpGearbox("Trade USDC Tier 1");
 
@@ -48,6 +56,8 @@ contract DCABotTest is BotTestHelper {
             uniswapAdapter,
             router // alternatively can be called by uniswapAdapter.targetContract
         );
+        sigUtils = new SigUtils(bot.DOMAIN_SEPARATOR());
+
         vm.prank(user);
         creditFacade.setBotPermissions(
             address(creditAccount), address(bot), uint192(EXTERNAL_CALLS_PERMISSION)
@@ -117,6 +127,35 @@ contract DCABotTest is BotTestHelper {
         _assertOrderIsEqual(orderId, order);
     }
 
+    function test_DCA_03_01_submitOrderWithSignature_works_as_expected_when_called_properly() public {
+        DCABot.Order memory order = DCABot.Order({
+            borrower: user,
+            manager: address(creditManager),
+            account: address(creditAccount),
+            tokenOut: address(weth),
+            budget: 1000,
+            totalSpend:  0,
+            interval: 1 days,
+            amountPerInterval: 100,
+            lastPrice: 0,
+            lastPurchaseTime: 0,
+            deadline: block.timestamp + 7 days
+        });
+
+        vm.expectEmit(true, true, true, true);
+        emit DCABot.CreateOrder(user, 0);
+
+        bytes memory signature = _signOrder(order, 0, userKey);
+
+        // The test is run as executor to make sure that signature works anyway
+        vm.prank(executor);
+        uint256 orderId = bot.submitOrderWithSignature(order, 0, signature);
+
+        assertEq(orderId, 0, "Incorrect orderId");
+
+        _assertOrderIsEqual(orderId, order);
+    }
+
     // U:[DCA-04]
     function test_DCA_04_cancelOrder_reverts_if_caller_is_not_borrower() public {
         DCABot.Order memory order = _dummyOrder();
@@ -130,6 +169,20 @@ contract DCABotTest is BotTestHelper {
         bot.cancelOrder(orderId);
     }
 
+    // U:[DCA-04_1]
+    function test_DCA_04_01_cancelOrderWithSignature_reverts_if_caller_is_not_borrower() public {
+        DCABot.Order memory order = _dummyOrder();
+
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
+
+        bytes memory signature = _signCancelOrder(orderId, attackerKey);
+
+        vm.expectRevert(DCABot.CallerNotBorrower.selector);
+        vm.prank(executor);
+        bot.cancelOrderWithSignature(orderId, signature);
+    }
+
     function test_DCA_05_cancelOrder_works_as_expected_when_called_properly() public {
         DCABot.Order memory order = _dummyOrder();
 
@@ -141,6 +194,23 @@ contract DCABotTest is BotTestHelper {
 
         vm.prank(user);
         bot.cancelOrder(orderId);
+
+        _assertOrderIsEmpty(orderId);
+    }
+
+    function test_DCA_05_01_cancelOrderWithSignature_works_as_expected_when_called_properly() public {
+        DCABot.Order memory order = _dummyOrder();
+
+        vm.prank(user);
+        uint256 orderId = bot.submitOrder(order);
+
+        bytes memory signature = _signCancelOrder(orderId, userKey);
+
+        vm.expectEmit(true, true, true, true);
+        emit DCABot.CancelOrder(user, orderId);
+
+        vm.prank(user);
+        bot.cancelOrderWithSignature(orderId, signature);
 
         _assertOrderIsEmpty(orderId);
     }
@@ -342,6 +412,31 @@ contract DCABotTest is BotTestHelper {
         bot.executeOrder(orderId);
     }
 
+    function test_DCA_15_submitOrderWithSignature_cant_be_replayed() public {
+        DCABot.Order memory order = _dummyOrder();
+
+        vm.expectEmit(true, true, true, true);
+        emit DCABot.CreateOrder(user, 0);
+
+        // Creating signature with correct current nonce
+        bytes memory signature = _signOrder(order, 0, userKey);
+
+        // The test is run as executor to make sure that signature works anyway
+        vm.prank(executor);
+        uint256 orderId = bot.submitOrderWithSignature(order, 0, signature);
+        assertEq(orderId, 0, "Incorrect orderId");
+        _assertOrderIsEqual(orderId, order);
+
+        // Submitting the same order with the same nonce
+        vm.prank(executor);
+        vm.expectRevert(DCABot.IncorrectSignatureNonce.selector);
+        bot.submitOrderWithSignature(order, 0, signature);
+
+        // Submitting the same order with updated nonce but the signature for initial nonce
+        vm.prank(executor);
+        vm.expectRevert(DCABot.IncorrectSignatureNonce.selector);
+        bot.submitOrderWithSignature(order, 1, signature);
+    }
 
     function _assertOrderIsEqual(uint256 orderId, DCABot.Order memory order) internal view {
         (
@@ -426,5 +521,17 @@ contract DCABotTest is BotTestHelper {
         // CONFIGURATOR from here: import "@gearbox-protocol/core-v3/contracts/test/lib/constants.sol"; didn't work
         vm.prank(0xa133C9A92Fb8dDB962Af1cbae58b2723A0bdf23b);
         priceOracle.setPriceFeed(address(usdc), priceFeed, 48 hours, false);
+    }
+
+    function _signOrder(DCABot.Order memory order, uint256 nonce, uint256 key) internal view returns (bytes memory signature) {
+        bytes32 digest = sigUtils.getTypeOrderdDataHash(order, nonce);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        signature = abi.encodePacked(r, s, v);
+    }
+
+    function _signCancelOrder(uint256 orderId, uint256 key) internal view returns (bytes memory signature) {
+        bytes32 digest = sigUtils.getTypeCancelOrderDataHash(orderId);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        signature = abi.encodePacked(r, s, v);
     }
 }
