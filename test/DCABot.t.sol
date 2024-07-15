@@ -30,7 +30,7 @@ contract DCABotTest is BotTestHelper {
     // tokens
     IERC20 weth = IERC20(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
     IERC20 usdc = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
-    
+
     // dependencies
     address uniswapAdapter = 0xea8199179D6A589A0C2Df225095C1DB39A12D257; // UniswapV3Adapter
     address router = 0xE592427A0AEce92De3Edee1F18E0157C05861564; // SwapRouter
@@ -59,9 +59,7 @@ contract DCABotTest is BotTestHelper {
         sigUtils = new SigUtils(bot.DOMAIN_SEPARATOR());
 
         vm.prank(user);
-        creditFacade.setBotPermissions(
-            address(creditAccount), address(bot), uint192(EXTERNAL_CALLS_PERMISSION)
-        );
+        creditFacade.setBotPermissions(address(creditAccount), address(bot), uint192(EXTERNAL_CALLS_PERMISSION));
 
         // let's make weth non-quoted for this test because bot doesn't work with quotas
         uint256 quotedTokensMask = creditManager.quotedTokensMask();
@@ -108,7 +106,7 @@ contract DCABotTest is BotTestHelper {
             account: address(creditAccount),
             tokenOut: address(weth),
             budget: 1000,
-            totalSpend:  0,
+            totalSpend: 0,
             interval: 1 days,
             amountPerInterval: 100,
             lastPrice: 0,
@@ -134,7 +132,7 @@ contract DCABotTest is BotTestHelper {
             account: address(creditAccount),
             tokenOut: address(weth),
             budget: 1000,
-            totalSpend:  0,
+            totalSpend: 0,
             interval: 1 days,
             amountPerInterval: 100,
             lastPrice: 0,
@@ -311,7 +309,7 @@ contract DCABotTest is BotTestHelper {
         uint256 orderId = bot.submitOrder(order);
 
         deal({token: address(underlying), to: order.account, give: 0});
-    
+
         vm.expectRevert();
         vm.prank(executor);
         bot.executeOrder(orderId);
@@ -341,14 +339,17 @@ contract DCABotTest is BotTestHelper {
         assertEq(usdc.balanceOf(executor), executorUSDCBefore, "Executor lost USDC");
         assertEq(weth.balanceOf(executor), executorWETHBefore, "Executor lost WETH");
         assertEq(
-            usdc.balanceOf(creditAddress), 
-            creditUSDCBefore - order.amountPerInterval, 
+            usdc.balanceOf(creditAddress),
+            creditUSDCBefore - order.amountPerInterval,
             "Incorrect USDC balance after trade"
         );
         assertApproxEqAbs(
-            weth.balanceOf(creditAddress), 
-            creditWETHBefore + priceOfPurchaseFromOracle, 
-            (priceOfPurchaseFromOracle * (bot.slippageDenominator() - bot.slippageCoefficient()) / bot.slippageDenominator()),
+            weth.balanceOf(creditAddress),
+            creditWETHBefore + priceOfPurchaseFromOracle,
+            (
+                priceOfPurchaseFromOracle * (bot.slippageDenominator() - bot.slippageCoefficient())
+                    / bot.slippageDenominator()
+            ),
             "Incorrect WETH balance after trade"
         );
     }
@@ -360,7 +361,7 @@ contract DCABotTest is BotTestHelper {
         // usdc - 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48 - 87300
         // weth - 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2 - 4500
         // thus to execute 10 trades without chainging price oracles we need interval to be less than 4500/10
-        // TODO - get updated price feed from the fork with roll fork 
+        // TODO - get updated price feed from the fork with roll fork
         order.interval = 400;
 
         vm.prank(user);
@@ -515,7 +516,7 @@ contract DCABotTest is BotTestHelper {
     function setMockPriceFeed() internal {
         // 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419 - weth price feed
         // 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6 - usdc price feed
-        // since price is determined by the Chainlink feeds - we can't expect 
+        // since price is determined by the Chainlink feeds - we can't expect
         // update prices we need, so we use mock price feed for usdc
         address priceFeed = address(new PriceFeedMock(int256(70000000), 8));
         // CONFIGURATOR from here: import "@gearbox-protocol/core-v3/contracts/test/lib/constants.sol"; didn't work
@@ -523,7 +524,11 @@ contract DCABotTest is BotTestHelper {
         priceOracle.setPriceFeed(address(usdc), priceFeed, 48 hours, false);
     }
 
-    function _signOrder(DCABot.Order memory order, uint256 nonce, uint256 key) internal view returns (bytes memory signature) {
+    function _signOrder(DCABot.Order memory order, uint256 nonce, uint256 key)
+        internal
+        view
+        returns (bytes memory signature)
+    {
         bytes32 digest = sigUtils.getTypeOrderdDataHash(order, nonce);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
         signature = abi.encodePacked(r, s, v);

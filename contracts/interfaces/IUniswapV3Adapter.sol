@@ -55,11 +55,7 @@ interface IUniswapV3AdapterExceptions {
 }
 
 /// @title Uniswap V3 Router adapter interface
-interface IUniswapV3Adapter is
-    IUniswapV3AdapterTypes,
-    IUniswapV3AdapterEvents,
-    IUniswapV3AdapterExceptions
-{
+interface IUniswapV3Adapter is IUniswapV3AdapterTypes, IUniswapV3AdapterEvents, IUniswapV3AdapterExceptions {
     function exactInputSingle(ISwapRouter.ExactInputSingleParams calldata params)
         external
         returns (uint256 tokensToEnable, uint256 tokensToDisable);

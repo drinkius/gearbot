@@ -7,11 +7,9 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 
-import {Balance} from "@gearbox-protocol/core-v2/contracts/libraries/Balances.sol";
 import {MultiCall} from "@gearbox-protocol/core-v2/contracts/libraries/MultiCall.sol";
 import {ICreditManagerV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditManagerV3.sol";
 import {ICreditFacadeV3} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3.sol";
-import {ICreditFacadeV3Multicall} from "@gearbox-protocol/core-v3/contracts/interfaces/ICreditFacadeV3Multicall.sol";
 import {IPriceOracleV3} from "@gearbox-protocol/core-v3/contracts/interfaces/IPriceOracleV3.sol";
 
 import {IUniswapV3Adapter, ISwapRouter} from "./interfaces/IUniswapV3Adapter.sol";
@@ -61,16 +59,14 @@ contract DCABot is EIP712 {
     uint256 internal _nextOrderId;
 
     /// @notice Slippage controls - max 1 percent.
-    uint public constant slippageCoefficient = 9900;
-    uint public constant slippageDenominator = 10000;
+    uint256 public constant slippageCoefficient = 9900;
+    uint256 public constant slippageDenominator = 10000;
 
     /// @notice EIP-712 type hashes
     bytes32 public constant ORDER_TYPEHASH = keccak256(
         "Order(address borrower,address manager,address account,address tokenOut,uint256 budget,uint256 interval,uint256 amountPerInterval,uint256 deadline,uint256 nonce)"
     );
-    bytes32 public constant CANCEL_ORDER_TYPEHASH = keccak256(
-        "CancelOrder(uint256 orderId)"
-    );
+    bytes32 public constant CANCEL_ORDER_TYPEHASH = keccak256("CancelOrder(uint256 orderId)");
 
     // ------ //
     // EVENTS //
@@ -98,10 +94,7 @@ contract DCABot is EIP712 {
     /// @param amountPurchased Amount of tokenOut purchased this execution.
     /// @param totalSpend Amount of tokenOut purchased this execution.
     event OrderCompleted(
-        address indexed executor, 
-        uint256 indexed orderId,
-        uint256 amountPurchased, 
-        uint256 totalSpend
+        address indexed executor, uint256 indexed orderId, uint256 amountPurchased, uint256 totalSpend
     );
 
     /// @notice Emitted when DCA order is reset after a large price swing.
@@ -173,23 +166,26 @@ contract DCABot is EIP712 {
     /// @param order Order to submit.
     /// @param signature EIP-712 signature of the order.
     /// @return orderId ID of created order.
-    function submitOrderWithSignature(
-        Order calldata order, 
-        uint256 nonce, 
-        bytes memory signature
-    ) external returns (uint256 orderId) {
-        bytes32 orderHash = _hashTypedDataV4(keccak256(abi.encode(
-            ORDER_TYPEHASH,
-            order.borrower,
-            order.manager,
-            order.account,
-            order.tokenOut,
-            order.budget,
-            order.interval,
-            order.amountPerInterval,
-            order.deadline,
-            nonce
-        )));
+    function submitOrderWithSignature(Order calldata order, uint256 nonce, bytes memory signature)
+        external
+        returns (uint256 orderId)
+    {
+        bytes32 orderHash = _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    ORDER_TYPEHASH,
+                    order.borrower,
+                    order.manager,
+                    order.account,
+                    order.tokenOut,
+                    order.budget,
+                    order.interval,
+                    order.amountPerInterval,
+                    order.deadline,
+                    nonce
+                )
+            )
+        );
 
         address signer = ECDSA.recover(orderHash, signature);
         uint256 expectedNonce = _useSignatureNonce(signer);
@@ -213,10 +209,7 @@ contract DCABot is EIP712 {
     function _createOrder(Order calldata order) internal returns (uint256 orderId) {
         // U:[DCA-08]
         if (
-            quoteToken == order.tokenOut || 
-            order.amountPerInterval == 0 || 
-            order.interval == 0 ||
-            order.totalSpend != 0
+            quoteToken == order.tokenOut || order.amountPerInterval == 0 || order.interval == 0 || order.totalSpend != 0
         ) {
             revert InvalidOrder();
         }
@@ -224,10 +217,8 @@ contract DCABot is EIP712 {
         orders[orderId] = order;
 
         Order storage storedOrder = orders[orderId];
-        storedOrder.lastPrice = getCurrentPrice(
-            ICreditManagerV3(storedOrder.manager).priceOracle(), 
-            storedOrder.tokenOut
-        );
+        storedOrder.lastPrice =
+            getCurrentPrice(ICreditManagerV3(storedOrder.manager).priceOracle(), storedOrder.tokenOut);
 
         emit CreateOrder(order.borrower, orderId);
     }
@@ -251,10 +242,7 @@ contract DCABot is EIP712 {
         Order storage order = orders[orderId];
         require(order.borrower != address(0), "Order does not exist");
 
-        bytes32 cancelHash = _hashTypedDataV4(keccak256(abi.encode(
-            CANCEL_ORDER_TYPEHASH,
-            orderId
-        )));
+        bytes32 cancelHash = _hashTypedDataV4(keccak256(abi.encode(CANCEL_ORDER_TYPEHASH, orderId)));
 
         address signer = ECDSA.recover(cancelHash, signature);
         // U:[DCA-04_1]
@@ -358,10 +346,7 @@ contract DCABot is EIP712 {
     ///      * order must be correctly constructed and not expired;
     ///      * trigger condition must hold if trigger price is set;
     ///      * borrower must have an account in manager with non-empty input token balance.
-    function _validateOrder(Order memory order) internal view returns (
-        uint256 minAmountOut, 
-        uint256 currentPrice
-    ) {
+    function _validateOrder(Order memory order) internal view returns (uint256 minAmountOut, uint256 currentPrice) {
         // U:[DCA-06]
         if (order.account == address(0)) {
             revert OrderIsCancelled();
@@ -394,7 +379,8 @@ contract DCABot is EIP712 {
             order.amountPerInterval = order.budget - order.totalSpend;
         }
 
-        minAmountOut = (order.amountPerInterval * currentPrice * slippageCoefficient) / (10**IERC20Metadata(quoteToken).decimals() * slippageDenominator);
+        minAmountOut = (order.amountPerInterval * currentPrice * slippageCoefficient)
+            / (10 ** IERC20Metadata(quoteToken).decimals() * slippageDenominator);
     }
 
     /// @dev EIP712 domain separator

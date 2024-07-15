@@ -17,71 +17,34 @@ contract SigUtils {
     bytes32 public constant CANCEL_ORDER_TYPEHASH = 0x8e845176a8c53dbc1df7d8dc731160c4bc9898b982e14e91efc5334019c3290c;
 
     // computes the hash of an order
-    function getOrderHash(DCABot.Order memory _order, uint256 _nonce)
-        internal
-        pure
-        returns (bytes32)
-    {
-        return
-            keccak256(
-                abi.encode(
-                    ORDER_TYPEHASH,
-                    _order.borrower,
-                    _order.manager,
-                    _order.account,
-                    _order.tokenOut,
-                    _order.budget,
-                    _order.interval,
-                    _order.amountPerInterval,
-                    _order.deadline,
-                    _nonce
-                )
-            );
+    function getOrderHash(DCABot.Order memory _order, uint256 _nonce) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                ORDER_TYPEHASH,
+                _order.borrower,
+                _order.manager,
+                _order.account,
+                _order.tokenOut,
+                _order.budget,
+                _order.interval,
+                _order.amountPerInterval,
+                _order.deadline,
+                _nonce
+            )
+        );
     }
 
     // computes the hash of an order
-    function getCancelOrderHash(uint256 orderId)
-        internal
-        pure
-        returns (bytes32)
-    {
-        return
-            keccak256(
-                abi.encode(
-                    CANCEL_ORDER_TYPEHASH,
-                    orderId
-                )
-            );
+    function getCancelOrderHash(uint256 orderId) internal pure returns (bytes32) {
+        return keccak256(abi.encode(CANCEL_ORDER_TYPEHASH, orderId));
     }
 
     // computes the hash of the fully encoded EIP-712 message for the domain, which can be used to recover the signer
-    function getTypeOrderdDataHash(DCABot.Order memory _order, uint256 _nonce)
-        public
-        view
-        returns (bytes32)
-    {
-        return
-            keccak256(
-                abi.encodePacked(
-                    "\x19\x01",
-                    DOMAIN_SEPARATOR,
-                    getOrderHash(_order, _nonce)
-                )
-            );
+    function getTypeOrderdDataHash(DCABot.Order memory _order, uint256 _nonce) public view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, getOrderHash(_order, _nonce)));
     }
 
-    function getTypeCancelOrderDataHash(uint256 orderId)
-        public
-        view
-        returns (bytes32)
-    {
-        return
-            keccak256(
-                abi.encodePacked(
-                    "\x19\x01",
-                    DOMAIN_SEPARATOR,
-                    getCancelOrderHash(orderId)
-                )
-            );
+    function getTypeCancelOrderDataHash(uint256 orderId) public view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, getCancelOrderHash(orderId)));
     }
 }
