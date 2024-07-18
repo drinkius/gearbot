@@ -47,9 +47,10 @@ contract DCABotTest is BotTestHelper {
         executor = makeAddr("EXECUTOR");
         (attacker, attackerKey) = makeAddrAndKey("ATTACKER");
 
+        setupNetwork();
         setUpGearbox("Trade USDC Tier 1");
 
-        creditAccount = openCreditAccount(user, 50_000e6, 100_000e6);
+        creditAccount = dealUnderlyingAndOpenCreditAccount(user, 50_000e6, 100_000e6);
 
         bot = new DCABot(
             address(usdc),

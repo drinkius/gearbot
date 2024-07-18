@@ -31,9 +31,10 @@ contract LimitOrderBotTest is BotTestHelper {
         user = makeAddr("USER");
         executor = makeAddr("EXECUTOR");
 
+        setupNetwork();
         setUpGearbox("Trade USDC Tier 1");
 
-        creditAccount = openCreditAccount(user, 50_000e6, 100_000e6);
+        creditAccount = dealUnderlyingAndOpenCreditAccount(user, 50_000e6, 100_000e6);
 
         bot = new LimitOrderBot();
         vm.prank(user);

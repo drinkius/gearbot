@@ -39,9 +39,11 @@ contract BotTestHelper is Test {
     // SETUP //
     // ----- //
 
-    function setUpGearbox(string memory creditManagerName) internal {
+    function setupNetwork() internal {
         vm.createSelectFork(vm.envString("FORK_RPC_URL"), vm.envUint("FORK_BLOCK_NUMBER"));
+    }
 
+    function setUpGearbox(string memory creditManagerName) internal {
         addressProvider = IAddressProviderV3(vm.envAddress("ADDRESS_PROVIDER"));
         _setUpGearboxCoreContracts();
         _setUpGearboxCreditContracts(creditManagerName);
@@ -66,15 +68,22 @@ contract BotTestHelper is Test {
     // CREDIT ACCOUNT //
     // -------------- //
 
-    function openCreditAccount(address user, uint256 collateralAmount, uint256 debtAmount)
+    function dealUnderlyingAndOpenCreditAccount(address user, uint256 collateralAmount, uint256 debtAmount)
         internal
         returns (ICreditAccountV3 creditAccount)
     {
         // Issue with USDC: https://github.com/foundry-rs/forge-std/issues/318
         // resolved by updating forge-std
         deal({token: address(underlying), to: user, give: collateralAmount});
-
         vm.startPrank(user);
+        creditAccount = openCreditAccount(user, collateralAmount, debtAmount);
+        vm.stopPrank();
+    }
+
+    function openCreditAccount(address user, uint256 collateralAmount, uint256 debtAmount)
+        internal
+        returns (ICreditAccountV3 creditAccount)
+    {
         underlying.approve(address(creditManager), collateralAmount);
         creditAccount = ICreditAccountV3(
             creditFacade.openCreditAccount(
@@ -94,7 +103,6 @@ contract BotTestHelper is Test {
                 0
             )
         );
-        vm.stopPrank();
     }
 
     // --------- //

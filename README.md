@@ -1,8 +1,14 @@
 # Gearbox DCA Strategy Bot
+For local mainnet fork testing:
 ```
+forge install
 forge test --match-path test/DCABot.t.sol
 ```
-
+For testing of live Gearbox Anvil network:
+Request test tokens & degen NFT [here](https://anvil.gearbox.foundation/forks/Ethereum/faucet) then operate with the scripts
+```
+forge script script/DCABot.s.sol --rpc-url anvilGearbox --broadcast
+```
 ## Issues faced making the project
 1) Updated USDC mainnet deployment was incompatible with older **forge-std** version of the  **dev-bots-tutorial** repo. Had to update the dependency
 2) Initially thought of utilizing Foundry dependencies but couldn't compile integrations-v3 while resolving AdapterType.sol since it's reliant on node packages which I wanted to avoid - opted to copy the required interfaces in limited form
